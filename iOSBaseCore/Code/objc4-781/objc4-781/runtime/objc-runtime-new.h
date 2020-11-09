@@ -272,21 +272,20 @@ struct cache_t {
     explicit_atomic<uintptr_t> _maskAndBuckets;
     mask_t _mask_unused;
     
-    // How much the mask is shifted by.
+    // mask掩码移动位数
     static constexpr uintptr_t maskShift = 48;
     
-    // Additional bits after the mask which must be zero. msgSend
-    // takes advantage of these additional bits to construct the value
-    // `mask << 4` from `_maskAndBuckets` in a single instruction.
+    // 掩码后面的附加位必须是0
+    // msgSend利用额外的字节位，使用单一指令从`_maskAndBuckets`中提取`mask << 4`
     static constexpr uintptr_t maskZeroBits = 4;
     
-    // The largest mask value we can store.
+    // 可以存储的最大mask掩码值(2^16 - 1)
     static constexpr uintptr_t maxMask = ((uintptr_t)1 << (64 - maskShift)) - 1;
     
-    // The mask applied to `_maskAndBuckets` to retrieve the buckets pointer.
+    // 用于从`_maskAndBuckets`中找回`buckets`的指针位置
     static constexpr uintptr_t bucketsMask = ((uintptr_t)1 << (maskShift - maskZeroBits)) - 1;
     
-    // Ensure we have enough bits for the buckets pointer.
+    // 没有足够的空间来存放buckets了
     static_assert(bucketsMask >= MACH_VM_MAX_ADDRESS, "Bucket field doesn't have enough bits for arbitrary pointers.");
 #elif CACHE_MASK_STORAGE == CACHE_MASK_STORAGE_LOW_4
     // _maskAndBuckets stores the mask shift in the low 4 bits, and
@@ -314,8 +313,8 @@ public:
     struct bucket_t *buckets();
     mask_t mask();
     mask_t occupied();
-    void incrementOccupied();
-    void setBucketsAndMask(struct bucket_t *newBuckets, mask_t newMask);
+    void incrementOccupied(); //增加占用
+    void setBucketsAndMask(struct bucket_t *newBuckets, mask_t newMask); // 设置Buckets和mask
     void initializeToEmpty();
 
     unsigned capacity();

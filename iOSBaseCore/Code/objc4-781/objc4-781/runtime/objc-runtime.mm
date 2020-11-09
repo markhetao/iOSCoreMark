@@ -409,6 +409,14 @@ void environ_init(void)
         }
     }
 
+//    // <<<<<<<<<<<< 测试代码
+//    for (size_t i = 0; i < sizeof(Settings)/sizeof(Settings[0]); i++) {
+//        const option_t *opt = &Settings[i];
+//        _objc_inform("%s: %s", opt->env, opt->help);
+//        _objc_inform("%s is set", opt->env);
+//    }
+//    // >>>>>>>>>>>>
+    
     // Print OBJC_HELP and OBJC_PRINT_OPTIONS output.
     if (PrintHelp  ||  PrintOptions) {
         if (PrintHelp) {
@@ -422,9 +430,9 @@ void environ_init(void)
         if (PrintOptions) {
             _objc_inform("OBJC_PRINT_OPTIONS is set");
         }
-
+        
         for (size_t i = 0; i < sizeof(Settings)/sizeof(Settings[0]); i++) {
-            const option_t *opt = &Settings[i];            
+            const option_t *opt = &Settings[i];
             if (PrintHelp) _objc_inform("%s: %s", opt->env, opt->help);
             if (PrintOptions && *opt->var) _objc_inform("%s is set", opt->env);
         }
@@ -514,9 +522,9 @@ void _objc_pthread_destroyspecific(void *arg)
 void tls_init(void)
 {
 #if SUPPORT_DIRECT_THREAD_KEYS
-    pthread_key_init_np(TLS_DIRECT_KEY, &_objc_pthread_destroyspecific);
+    pthread_key_init_np(TLS_DIRECT_KEY, &_objc_pthread_destroyspecific); // 绑定，init
 #else
-    _objc_pthread_key = tls_create(&_objc_pthread_destroyspecific);
+    _objc_pthread_key = tls_create(&_objc_pthread_destroyspecific); // 析构
 #endif
 }
 

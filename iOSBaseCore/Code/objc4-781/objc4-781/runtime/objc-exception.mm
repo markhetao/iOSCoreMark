@@ -697,7 +697,7 @@ static void _objc_terminate(void)
             __cxa_rethrow();
         } @catch (id e) {
             // It's an objc object. Call Foundation's handler, if any.
-            (*uncaught_handler)((id)e);
+            (*uncaught_handler)((id)e); // 抛出异常
             (*old_terminate)();
         } @catch (...) {
             // It's not an objc object. Continue to C++ terminate.

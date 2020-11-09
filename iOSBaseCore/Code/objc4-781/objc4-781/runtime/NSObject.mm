@@ -1706,7 +1706,7 @@ callAlloc(Class cls, bool checkNil, bool allocWithZone=false)
         return _objc_rootAllocWithZone(cls, nil);
     }
 #endif
-
+    
     // No shortcuts available.
     if (allocWithZone) {
         return ((id(*)(id, SEL, struct _NSZone *))objc_msgSend)(cls, @selector(allocWithZone:), nil);

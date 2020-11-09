@@ -436,7 +436,11 @@ void objc_addLoadImageFunc(objc_func_loadImage _Nonnull func) {
 
 /***********************************************************************
 * map_images_nolock
+*
+* - 处理dyld映射来的镜像
 * Process the given images which are being mapped in by dyld.
+*
+* - 所有类注册和修正都会被执行(或懒加载执行)，并且调用+load方法
 * All class registration and fixups are performed (or deferred pending
 * discovery of missing superclasses etc), and +load methods are called.
 *
@@ -917,14 +921,15 @@ void _objc_init(void)
     initialized = true;
     
     // fixme defer initialization until an objc-using image is found?
-    environ_init();
-    tls_init();
-    static_init();
-    runtime_init();
-    exception_init();
-    cache_init();
-    _imp_implementationWithBlock_init();
+    environ_init();  // 环境变量初始化
+    tls_init();      // 线程绑定
+    static_init();   // 静态构造函数初始化
+    runtime_init();  // 运行时环境初始化
+    exception_init();// 异常处理初始化
+    cache_init();    // 缓存初始化
+    _imp_implementationWithBlock_init(); // 实现回调初始化
 
+    // 注册
     _dyld_objc_notify_register(&map_images, load_images, unmap_image);
 
 #if __OBJC2__

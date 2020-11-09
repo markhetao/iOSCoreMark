@@ -59,6 +59,20 @@
  * The cacheUpdateLock is also used to protect the custom allocator used 
  * for large method cache blocks.
  *
+ * 为了提高速度，objc_msgSend在读取方法缓存时不获取任何锁。相反，将执行所有高速缓存更改，
+ * 以便与高速缓存更改器同时运行的任何objc_msgSend都不会崩溃或挂起或从高速缓存中获取错误的结果。
+ *
+ * 当缓存没被用到时（cache扩容后的旧缓存），它不会被立即释放。 因为可能有并发操作的`objc_msgSend`在使用它。
+ * 将旧缓存数据与数据结构(类、对象)断开连接，并放到垃圾清单上。现在，只有断开内存时正在运行的`objc_msgSend`可以访问该内存。
+ * 再次调用`objc_msgSend`将看不到垃圾内存。因为没有数据结构(类、对象)再指向该内存.
+ * `collecting_in_critical`函数检查所有线程，并在发现所有线程不在`objc_msgSend`之外时返回False。
+ * 这意味着对`objc_msgSend`的所有可访问垃圾内存的调用都已完成或移到了高速缓存查找阶段，所以此时可以安全的释放内存。
+ *
+ * 所有修改缓存数据或结构的函数都必须获取cacheUpdateLock，以防止并发修改造成干扰。
+ *
+ * 释放缓存垃圾的函数必须获取cacheUpdateLock并使用collection_in_critical（）刷新缓存读取器。
+ * cacheUpdateLock还用于保护用于大型方法缓存块的自定义分配器
+ *
  * Cache readers (PC-checked by collecting_in_critical())
  * objc_msgSend*
  * cache_getImp
@@ -479,11 +493,10 @@ bucket_t *cache_t::endMarker(struct bucket_t *b, uint32_t cap)
 
 bucket_t *allocateBuckets(mask_t newCapacity)
 {
-    // Allocate one extra bucket to mark the end of the list.
-    // This can't overflow mask_t because newCapacity is a power of 2.
+    // 创建1个bucket
     bucket_t *newBuckets = (bucket_t *)
         calloc(cache_t::bytesForCapacity(newCapacity), 1);
-
+    // 将创建的bucket放到当前空间的最尾部，标记数组的结束
     bucket_t *end = cache_t::endMarker(newBuckets, newCapacity);
 
 #if __arm__
@@ -491,12 +504,14 @@ bucket_t *allocateBuckets(mask_t newCapacity)
     // This saves an instruction in objc_msgSend.
     end->set<NotAtomic, Raw>((SEL)(uintptr_t)1, (IMP)(newBuckets - 1), nil);
 #else
-    // End marker's sel is 1 and imp points to the first bucket.
+    // 将结束标记为sel为1，imp为这个buckets
     end->set<NotAtomic, Raw>((SEL)(uintptr_t)1, (IMP)newBuckets, nil);
 #endif
     
+    // 只是打印记录
     if (PrintCaches) recordNewCache(newCapacity);
-
+    
+    // 返回这个bucket
     return newBuckets;
 }
 
@@ -572,18 +587,26 @@ bool cache_t::canBeFreed()
 ALWAYS_INLINE
 void cache_t::reallocate(mask_t oldCapacity, mask_t newCapacity, bool freeOld)
 {
+    // 读取旧buckets数组
     bucket_t *oldBuckets = buckets();
+    // 创建新空间大小的buckets数组
     bucket_t *newBuckets = allocateBuckets(newCapacity);
 
     // Cache's old contents are not propagated. 
     // This is thought to save cache memory at the cost of extra cache fills.
     // fixme re-measure this
 
+    // 新空间必须大于0
     ASSERT(newCapacity > 0);
+    
+    // 新空间-1 转为mask_t类型，再与新空间-1 进行判断
     ASSERT((uintptr_t)(mask_t)(newCapacity-1) == newCapacity-1);
 
+    // 设置新的bucktes数组和mask
+    // 【重点】我们发现mask就是newCapacity - 1, 表示当前最大可存储空间
     setBucketsAndMask(newBuckets, newCapacity - 1);
     
+    // 释放旧内存空间
     if (freeOld) {
         cache_collect_free(oldBuckets, oldCapacity);
     }
@@ -647,45 +670,78 @@ void cache_t::insert(Class cls, SEL sel, IMP imp, id receiver)
     ASSERT(sel != 0 && cls->isInitialized());
 
     // Use the cache as-is if it is less than 3/4 full
+    // 原occupied计数+1
     mask_t newOccupied = occupied() + 1;
+    // 进入查看： return mask() ? mask()+1 : 0;
+    // 就是当前mask有值就+1，否则设置初始值0
     unsigned oldCapacity = capacity(), capacity = oldCapacity;
+    
+    // 当前缓存是否为空
     if (slowpath(isConstantEmptyCache())) {
+        
         // Cache is read-only. Replace it.
+        // 如果为空，就给空间设置初始值4
+        // (进入INIT_CACHE_SIZE查看，可以发现就是1<<2，就是二进制100，十进制为4)
         if (!capacity) capacity = INIT_CACHE_SIZE;
+        
+        // 创建新空间（第三个入参为false，表示不需要释放旧空间）
         reallocate(oldCapacity, capacity, /* freeOld */false);
+    
     }
+    
+    // CACHE_END_MARKER 就是 1
+    // 如果当前计数+1 < 空间的 3/4。 就不用处理
+    // 表示空间够用。 不需要空间扩容
     else if (fastpath(newOccupied + CACHE_END_MARKER <= capacity / 4 * 3)) {
         // Cache is less than 3/4 full. Use it as-is.
     }
+    
+    // 如果计数大于3/4， 就需要进行扩容操作
     else {
+        // 如果空间存在，就2倍扩容。 如果不存在，就设为初始值4
         capacity = capacity ? capacity * 2 : INIT_CACHE_SIZE;
+        
+        // 防止超出最大空间值（2^16 - 1）
         if (capacity > MAX_CACHE_SIZE) {
             capacity = MAX_CACHE_SIZE;
         }
+        
+        // 创建新空间（第三个入参为true，表示需要释放旧空间）
         reallocate(oldCapacity, capacity, true);
     }
 
+    // 读取现在的buckets数组
     bucket_t *b = buckets();
+    
+    // 新的mask值(当前空间最大存储大小)
     mask_t m = capacity - 1;
+    
+    // 使用hash计算当前函数的位置(内部就是sel & m， 就是取余操作，保障begin值在m当前可用空间内)
     mask_t begin = cache_hash(sel, m);
     mask_t i = begin;
 
-    // Scan for the first unused slot and insert there.
-    // There is guaranteed to be an empty slot because the
-    // minimum size is 4 and we resized at 3/4 full.
     do {
+        // 如果当前位置为空（空间位置没被占用）
         if (fastpath(b[i].sel() == 0)) {
+            // Occupied计数+1
             incrementOccupied();
+            // 将sle和imp与cls关联起来并写入内存中
             b[i].set<Atomic, Encoded>(sel, imp, cls);
             return;
         }
+        
+        // 如果当前位置有值(位置被占用)
         if (b[i].sel() == sel) {
             // The entry was added to the cache by some other thread
             // before we grabbed the cacheUpdateLock.
+            // 直接返回
             return;
         }
+        // 如果位置有值，空间位置依次加1，找空的位置去写入
+        // 因为当前空间是没超出mask最大空间的，所以一定有空位置可以放置的。
     } while (fastpath((i = cache_next(i, m)) != begin));
 
+    // 各种错误处理
     cache_t::bad_cache(receiver, (SEL)sel, cls);
 }
 
@@ -983,10 +1039,14 @@ static void cache_collect_free(bucket_t *data, mask_t capacity)
 #endif
 
     if (PrintCaches) recordDeadCache(capacity);
-
+    
+    // 垃圾房： 开辟空间 （如果首次，就开辟初始空间，如果不是，就空间*2进行拓展）
     _garbage_make_room ();
+    // 将当前扩容后的capacity加入垃圾房的尺寸中，便于后续释放。
     garbage_byte_size += cache_t::bytesForCapacity(capacity);
+    // 将当前新数据data存放到 garbage_count 后面 这样可以释放前面的，而保留后面的新值
     garbage_refs[garbage_count++] = data;
+    // 不记录之前的缓存 = 【清空之前的缓存】。
     cache_collect(false);
 }
 
